@@ -1,0 +1,14 @@
+version: "3.9"
+
+services:
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./.env:/app/.env:ro
+      - ./sample_journal:/app/sample_journal:ro
+    environment:
+      - DATASTORE_BACKEND=${DATASTORE_BACKEND:-mock}
+      - LLM_PROVIDER=${LLM_PROVIDER:-mock}
+      - LOG_LEVEL=debug
