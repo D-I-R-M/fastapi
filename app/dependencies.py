@@ -1,6 +1,7 @@
 from functools import lru_cache
 
-from app.adapters.datastore import BaseDatastoreAdapter, get_datastore_adapter
+from app.adapters.base import BaseDatastoreAdapter
+from app.adapters.datastore import get_datastore_adapter
 from app.adapters.llm import BaseLLMAdapter, get_llm_adapter
 from app.services.journal import JournalService, ReflectionService
 

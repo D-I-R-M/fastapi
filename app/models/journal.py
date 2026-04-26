@@ -1,195 +1,68 @@
-"""
-app/services/journal.py — business logic layer.
-
-JournalService      wraps the datastore adapter with query / aggregation helpers.
-ReflectionService   builds prompts and calls the LLM adapter.
-"""
 from __future__ import annotations
 
-from collections import Counter
-from datetime import datetime, timezone
-
-from app.adapters.datastore import BaseDatastoreAdapter
-from app.adapters.llm import BaseLLMAdapter
-from app.models.journal import (
-    InsightsResponse,
-    JournalEntry,
-    JournalEntryBrief,
-    ReflectRequest,
-    ReflectResponse,
-    SearchQuery,
-)
+from datetime import datetime
+from typing import Any
+from pydantic import BaseModel, Field
 
 
-# ---------------------------------------------------------------------------
-# JournalService
-# ---------------------------------------------------------------------------
-
-class JournalService:
-    def __init__(self, adapter: BaseDatastoreAdapter) -> None:
-        self._ds = adapter
-
-    async def get_entry(self, uid: str) -> JournalEntry | None:
-        return await self._ds.get_entry(uid)
-
-    async def list_entries(
-        self, query: SearchQuery
-    ) -> tuple[list[JournalEntryBrief], int]:
-        entries, total = await self._ds.list_entries(query)
-        briefs = [
-            JournalEntryBrief(
-                uid=e.uid,
-                title=e.title,
-                activity=e.activity,
-                mime_type=e.mime_type,
-                timestamp=e.timestamp,
-                tags=e.tags,
-                keep=e.keep,
-            )
-            for e in entries
-        ]
-        return briefs, total
-
-    async def delete_entry(self, uid: str) -> bool:
-        return await self._ds.delete_entry(uid)
-
-    async def aggregate(
-        self,
-        activity: str | None = None,
-        since: datetime | None = None,
-        until: datetime | None = None,
-    ) -> dict:
-        """Return aggregate stats over a (filtered) view of the journal."""
-        all_entries, _ = await self._ds.list_entries(
-            SearchQuery(limit=500, offset=0, activity=activity or "")
-        )
-        if since:
-            all_entries = [e for e in all_entries if e.timestamp and e.timestamp >= since]
-        if until:
-            all_entries = [e for e in all_entries if e.timestamp and e.timestamp <= until]
-
-        days: set[str] = set()
-        activity_counter: Counter = Counter()
-        tag_counter: Counter = Counter()
-
-        for e in all_entries:
-            if e.timestamp:
-                days.add(e.timestamp.date().isoformat())
-            if e.activity:
-                activity_counter[e.activity] += 1
-            for t in e.tags:
-                tag_counter[t] += 1
-
-        return {
-            "entries": all_entries,
-            "total": len(all_entries),
-            "active_days": len(days),
-            "top_activities": [
-                {"activity": a, "count": c}
-                for a, c in activity_counter.most_common(10)
-            ],
-            "top_tags": [
-                {"tag": t, "count": c} for t, c in tag_counter.most_common(10)
-            ],
-        }
+class JournalEntry(BaseModel):
+    uid: str = Field(..., description="Unique object id from the datastore")
+    title: str = Field("Untitled", description="Human-readable title")
+    activity: str = Field("", description="Bundle id of the activity")
+    activity_id: str = Field("", description="Instance id of the activity session")
+    mime_type: str = Field("", description="MIME type of the stored file")
+    timestamp: datetime | None = Field(None, description="Creation time (UTC)")
+    filesize: int = Field(0, description="Size of the stored file in bytes")
+    description: str = Field("", description="Free-text description")
+    tags: list[str] = Field(default_factory=list, description="User-assigned tags")
+    keep: bool = Field(False, description="Whether the entry is starred")
+    share_scope: str = Field("private", description="Sharing scope")
+    preview_base64: str | None = Field(None, description="Base64 PNG thumbnail")
+    extra: dict[str, Any] = Field(default_factory=dict)
 
 
-# ---------------------------------------------------------------------------
-# ReflectionService
-# ---------------------------------------------------------------------------
-
-_SYSTEM_PROMPT = """\
-You are a thoughtful educational assistant helping young learners reflect on \
-their work saved in the Sugar Learning Platform Journal. \
-Your reflections are encouraging, age-appropriate, and focused on what the \
-learner can think about or try next. \
-Keep responses concise (3-5 paragraphs) unless asked otherwise. \
-Do not include markdown headers."""
+class JournalEntryBrief(BaseModel):
+    uid: str
+    title: str
+    activity: str
+    mime_type: str
+    timestamp: datetime | None
+    tags: list[str]
+    keep: bool
 
 
-def _entry_to_text(entry: JournalEntry) -> str:
-    parts = [
-        f"Title: {entry.title}",
-        f"Activity: {entry.activity}",
-        f"Created: {entry.timestamp.isoformat() if entry.timestamp else 'unknown'}",
-    ]
-    if entry.description:
-        parts.append(f"Description: {entry.description}")
-    if entry.tags:
-        parts.append(f"Tags: {', '.join(entry.tags)}")
-    return "\n".join(parts)
+class SearchQuery(BaseModel):
+    query: str = Field("", description="Full-text search term")
+    activity: str | None = Field(None, description="Filter by bundle id")
+    mime_type: str | None = Field(None, description="Filter by MIME type prefix")
+    tags: list[str] = Field(default_factory=list, description="Filter by tags")
+    limit: int = Field(20, ge=1, le=200)
+    offset: int = Field(0, ge=0)
+    order_by: str = Field("-timestamp", description="Sort field")
 
 
-class ReflectionService:
-    def __init__(
-        self, journal: JournalService, llm: BaseLLMAdapter
-    ) -> None:
-        self._journal = journal
-        self._llm = llm
+class ReflectRequest(BaseModel):
+    uids: list[str] = Field(..., min_length=1)
+    prompt_hint: str = Field("")
+    language: str = Field("en")
 
-    async def reflect(self, req: ReflectRequest) -> ReflectResponse:
-        entries = []
-        for uid in req.uids:
-            e = await self._journal.get_entry(uid)
-            if e:
-                entries.append(e)
 
-        if not entries:
-            raise ValueError("None of the requested entry UIDs were found.")
+class ReflectResponse(BaseModel):
+    uids: list[str]
+    reflection: str
+    model_used: str
 
-        entry_texts = "\n\n---\n\n".join(_entry_to_text(e) for e in entries)
 
-        user_msg = (
-            f"Here are the journal entries to reflect on:\n\n{entry_texts}"
-        )
-        if req.prompt_hint:
-            user_msg += f"\n\nAdditional instruction: {req.prompt_hint}"
-        if req.language != "en":
-            user_msg += f"\n\nPlease respond in language: {req.language}."
+class InsightsRequest(BaseModel):
+    activity: str | None = None
+    since: datetime | None = None
+    until: datetime | None = None
 
-        reflection = await self._llm.complete(system=_SYSTEM_PROMPT, user=user_msg)
 
-        return ReflectResponse(
-            uids=req.uids,
-            reflection=reflection,
-            model_used=self._llm.model_name,
-        )
-
-    async def insights(
-        self,
-        activity: str | None = None,
-        since: datetime | None = None,
-        until: datetime | None = None,
-    ) -> InsightsResponse:
-        agg = await self._journal.aggregate(activity=activity, since=since, until=until)
-
-        # Build a summary the LLM can narrate
-        entry_sample = agg["entries"][:10]  # cap to avoid huge prompts
-        sample_text = "\n".join(
-            f"- {_entry_to_text(e)}" for e in entry_sample
-        )
-        stats_text = (
-            f"Total entries: {agg['total']}\n"
-            f"Active days: {agg['active_days']}\n"
-            f"Top activities: {agg['top_activities']}\n"
-            f"Top tags: {agg['top_tags']}\n"
-        )
-        user_msg = (
-            "Here is an overview of a learner's Sugar Journal.\n\n"
-            f"Statistics:\n{stats_text}\n"
-            f"Sample entries (up to 10):\n{sample_text}\n\n"
-            "Write a short, encouraging narrative (2-3 paragraphs) summarising "
-            "this learner's progress, patterns, and one concrete suggestion for "
-            "what to explore next."
-        )
-
-        narrative = await self._llm.complete(system=_SYSTEM_PROMPT, user=user_msg)
-
-        return InsightsResponse(
-            total_entries=agg["total"],
-            active_days=agg["active_days"],
-            top_activities=agg["top_activities"],
-            top_tags=agg["top_tags"],
-            narrative=narrative,
-            model_used=self._llm.model_name,
-        )
+class InsightsResponse(BaseModel):
+    total_entries: int
+    active_days: int
+    top_activities: list[dict[str, Any]]
+    top_tags: list[dict[str, Any]]
+    narrative: str
+    model_used: str

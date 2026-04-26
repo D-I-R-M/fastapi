@@ -61,7 +61,7 @@ class JournalService:
     ) -> dict:
         """Return aggregate stats over a (filtered) view of the journal."""
         all_entries, _ = await self._ds.list_entries(
-            SearchQuery(limit=500, offset=0, activity=activity or "")
+            SearchQuery(limit=200, offset=0, activity=activity)
         )
         if since:
             all_entries = [e for e in all_entries if e.timestamp and e.timestamp >= since]

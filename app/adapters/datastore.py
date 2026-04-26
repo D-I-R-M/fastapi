@@ -23,25 +23,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from app.adapters.base import BaseDatastoreAdapter
 from app.config import settings
-from app.models.journal import JournalEntry, SearchQuery
+from app.models.journal import JournalEntry, SearchQuery  # keep this
 
 
-# ---------------------------------------------------------------------------
-# Abstract interface
-# ---------------------------------------------------------------------------
-
-class BaseDatastoreAdapter(ABC):
-    @abstractmethod
-    async def get_entry(self, uid: str) -> JournalEntry | None: ...
-
-    @abstractmethod
-    async def list_entries(self, query: SearchQuery) -> tuple[list[JournalEntry], int]:
-        """Return (page, total_count)."""
-        ...
-
-    @abstractmethod
-    async def delete_entry(self, uid: str) -> bool: ...
 
 
 # ---------------------------------------------------------------------------

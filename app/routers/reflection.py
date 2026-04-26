@@ -50,4 +50,5 @@ async def insights(
             until=body.until,
         )
     except Exception as exc:
+        import traceback
         raise HTTPException(status_code=502, detail=f"LLM error: {exc}") from exc

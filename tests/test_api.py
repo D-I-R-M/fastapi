@@ -192,6 +192,7 @@ def test_reflect_empty_uids():
 
 def test_insights_all():
     r = client.post("/insights", json={})
+    print(r.json())
     assert r.status_code == 200
     body = r.json()
     assert "total_entries" in body
