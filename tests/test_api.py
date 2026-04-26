@@ -222,3 +222,58 @@ def test_insights_date_filter():
     assert r.status_code == 200
     body = r.json()
     assert isinstance(body["total_entries"], int)
+
+# ---------------------------------------------------------------------------
+# WebSocket
+# ---------------------------------------------------------------------------
+
+def test_ws_status():
+    r = client.get("/ws/journal/status")
+    assert r.status_code == 200
+    assert "connected_clients" in r.json()
+
+
+def test_ws_publish_test_endpoint():
+    r = client.post("/ws/journal/publish", json={
+        "title": "Test WS entry",
+        "activity": "org.sugarlabs.TurtleArt",
+    })
+    assert r.status_code == 200
+    body = r.json()
+    assert body["published"] is True
+    assert body["event"]["event"] == "entry_added"
+
+
+def test_save_entry_rest():
+    r = client.post("/entries", json={
+        "uid": "ws-test-001",
+        "title": "WebSocket test entry",
+        "activity": "org.sugarlabs.TurtleArt",
+        "mime_type": "image/png",
+        "tags": ["art"],
+    })
+    assert r.status_code == 201
+    assert r.json()["uid"] == "ws-test-001"
+
+
+def test_ws_connect_receives_handshake():
+    with client.websocket_connect("/ws/journal") as ws:
+        data = ws.receive_json()
+        assert data["event"] == "connected"
+        assert "message" in data
+
+
+def test_ws_receives_entry_added_event():
+    with client.websocket_connect("/ws/journal") as ws:
+        ws.receive_json()  # consume handshake
+        client.post("/entries", json={
+            "uid": "ws-broadcast-test",
+            "title": "Broadcast test",
+            "activity": "org.sugarlabs.TurtleArt",
+            "mime_type": "image/png",
+            "tags": ["test"],
+        })
+        data = ws.receive_json()
+        assert data["event"] == "entry_added"
+        assert data["uid"] == "ws-broadcast-test"
+        assert data["title"] == "Broadcast test"
