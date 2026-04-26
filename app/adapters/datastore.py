@@ -45,45 +45,84 @@ class BaseDatastoreAdapter(ABC):
 
 
 # ---------------------------------------------------------------------------
-# D-Bus backend (real Sugar datastore)
+# D-Bus backend (real Sugar datastore OR mock_datastore_service.py)
 # ---------------------------------------------------------------------------
 
 class DBusDatastoreAdapter(BaseDatastoreAdapter):
     """
     Talks to org.laptop.sugar.DataStore over session D-Bus.
-    Mirrors what jarabe/journal uses internally.
 
-    The datastore's find() method signature is:
-      find(query: dict, properties: list[str]) -> (list[dict], int)
+    Works against both:
+      • The real Sugar Datastore (sugar-datastore, running inside a Sugar session)
+      • tools/mock_datastore_service.py (for development without Sugar)
 
-    Each result dict contains the metadata keys listed in models/journal.py.
+    D-Bus method signatures (from sugar-datastore/src/carquinyol/datastore.py):
+      find(query: a{sv}, properties: as) -> (aa{sv}, u)
+      delete(uid: s) -> void
+      get_filename(uid: s) -> s
+
+    IMPORTANT — async safety
+    ------------------------
+    dbus-python calls are blocking (they wait for a D-Bus reply on the calling
+    thread). FastAPI runs on an asyncio event loop, so we must run every D-Bus
+    call in a thread-pool executor to avoid blocking the loop.
     """
 
     DBUS_SERVICE = "org.laptop.sugar.DataStore"
-    DBUS_PATH = "/org/laptop/sugar/DataStore"
-    DBUS_IFACE = "org.laptop.sugar.DataStore"
+    DBUS_PATH    = "/org/laptop/sugar/DataStore"
+    DBUS_IFACE   = "org.laptop.sugar.DataStore"
+
+    # Properties we request from the datastore in list/search queries
+    _LIST_PROPS   = [
+        "uid", "title", "activity", "activity_id", "mime_type",
+        "timestamp", "filesize", "description", "tags", "keep", "share-scope",
+    ]
+    _DETAIL_PROPS = _LIST_PROPS + ["preview"]
 
     def __init__(self) -> None:
         try:
-            import dbus  # type: ignore
-            bus = dbus.SessionBus()
+            import dbus                        # type: ignore
+            import dbus.mainloop.glib          # type: ignore
+            # Install the GLib main loop integration so D-Bus signals work.
+            # Safe to call multiple times.
+            dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
+
+            bus   = dbus.SessionBus()
             proxy = bus.get_object(self.DBUS_SERVICE, self.DBUS_PATH)
-            self._ds = dbus.Interface(proxy, dbus_interface=self.DBUS_IFACE)
+            self._ds   = dbus.Interface(proxy, dbus_interface=self.DBUS_IFACE)
+            self._dbus = dbus   # keep reference so we can build typed values
         except Exception as exc:
             raise RuntimeError(
-                "D-Bus datastore not available. "
-                "Set DATASTORE_BACKEND=mock or DATASTORE_BACKEND=file."
+                "D-Bus datastore not available.\n"
+                "Options:\n"
+                "  1. Run tools/run_dbus_mock.sh in another terminal, then retry.\n"
+                "  2. Set DATASTORE_BACKEND=file or DATASTORE_BACKEND=mock."
             ) from exc
 
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
     def _props_to_entry(self, props: dict) -> JournalEntry:
+        """
+        Convert a raw D-Bus property dict to a JournalEntry.
+
+        The real datastore sends ALL values as strings (D-Bus type 's').
+        The mock service does the same. We coerce types here.
+        """
         ts_raw = props.get("timestamp", "")
         try:
             ts = datetime.fromtimestamp(float(ts_raw), tz=timezone.utc) if ts_raw else None
         except (ValueError, TypeError):
             ts = None
 
+        # Tags are stored as comma-separated string in the datastore
         tags_raw = props.get("tags", "")
         tags = [t.strip() for t in tags_raw.split(",") if t.strip()] if tags_raw else []
+
+        # keep is stored as "1"/"0" or "True"/"False"
+        keep_raw = str(props.get("keep", "0")).lower()
+        keep = keep_raw in ("1", "true", "yes")
 
         return JournalEntry(
             uid=str(props.get("uid", "")),
@@ -95,42 +134,70 @@ class DBusDatastoreAdapter(BaseDatastoreAdapter):
             filesize=int(props.get("filesize", 0) or 0),
             description=str(props.get("description", "")),
             tags=tags,
-            keep=bool(props.get("keep", False)),
+            keep=keep,
             share_scope=str(props.get("share-scope", "private")),
-            preview_base64=props.get("preview"),  # omit in list queries
+            preview_base64=props.get("preview") or None,
         )
 
-    _COMMON_PROPS = [
-        "uid", "title", "activity", "activity_id", "mime_type",
-        "timestamp", "filesize", "description", "tags", "keep", "share-scope",
-    ]
+    def _build_ds_query(self, query: SearchQuery) -> dict:
+        """
+        Build the dict that the DataStore's find() method expects.
+        All keys must map to D-Bus-compatible values (str / int / list).
+        """
+        ds_q: dict[str, Any] = {
+            "limit":    self._dbus.UInt32(query.limit),
+            "offset":   self._dbus.UInt32(query.offset),
+            "order_by": self._dbus.Array([query.order_by], signature="s"),
+        }
+        if query.query:
+            ds_q["query"] = query.query
+        if query.activity:
+            ds_q["activity"] = query.activity
+        if query.mime_type:
+            ds_q["mime_type"] = query.mime_type
+        return ds_q
+
+    # ------------------------------------------------------------------
+    # Thread-pool wrappers (keep asyncio event loop unblocked)
+    # ------------------------------------------------------------------
+
+    async def _find(self, ds_query: dict, props: list[str]):
+        import asyncio
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            None, lambda: self._ds.find(ds_query, props)
+        )
+
+    async def _delete(self, uid: str) -> None:
+        import asyncio
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, lambda: self._ds.delete(uid))
+
+    # ------------------------------------------------------------------
+    # Public interface
+    # ------------------------------------------------------------------
 
     async def get_entry(self, uid: str) -> JournalEntry | None:
         try:
-            results, _ = self._ds.find({"uid": uid}, self._COMMON_PROPS + ["preview"])
+            results, _ = await self._find({"uid": uid}, self._DETAIL_PROPS)
             if not results:
                 return None
             return self._props_to_entry(dict(results[0]))
-        except Exception:
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning("get_entry(%s) failed: %s", uid, exc)
             return None
 
     async def list_entries(self, query: SearchQuery) -> tuple[list[JournalEntry], int]:
-        ds_query: dict[str, Any] = {
-            "limit": query.limit,
-            "offset": query.offset,
-            "order_by": [query.order_by],
-        }
-        if query.query:
-            ds_query["query"] = query.query
-        if query.activity:
-            ds_query["activity"] = query.activity
-        if query.mime_type:
-            ds_query["mime_type"] = query.mime_type
+        ds_query = self._build_ds_query(query)
+        try:
+            results, total = await self._find(ds_query, self._LIST_PROPS)
+        except Exception as exc:
+            raise RuntimeError(f"DataStore find() failed: {exc}") from exc
 
-        results, total = self._ds.find(ds_query, self._COMMON_PROPS)
         entries = [self._props_to_entry(dict(r)) for r in results]
 
-        # Client-side tag filtering (datastore doesn't natively AND-filter tags)
+        # The real datastore doesn't AND-filter tags natively — do it client-side
         if query.tags:
             entries = [e for e in entries if all(t in e.tags for t in query.tags)]
 
@@ -138,9 +205,11 @@ class DBusDatastoreAdapter(BaseDatastoreAdapter):
 
     async def delete_entry(self, uid: str) -> bool:
         try:
-            self._ds.delete(uid)
+            await self._delete(uid)
             return True
-        except Exception:
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning("delete_entry(%s) failed: %s", uid, exc)
             return False
 
 
