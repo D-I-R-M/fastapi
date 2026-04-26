@@ -55,6 +55,19 @@ async def search_entries(
     }
 
 
+@router.post("", response_model=JournalEntry, status_code=201)
+async def save_entry(
+    body: JournalEntry,
+    svc: JournalService = Depends(get_journal_service),
+):
+    """
+    Save a new journal entry.
+    Broadcasts a live WebSocket event to all connected clients.
+    """
+    saved = await svc.save_entry(body)
+    return saved
+
+
 @router.delete("/{uid}", response_model=dict)
 async def delete_entry(
     uid: str,

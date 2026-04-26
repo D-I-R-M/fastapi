@@ -199,6 +199,43 @@ class DBusDatastoreAdapter(BaseDatastoreAdapter):
             return False
 
 
+    async def save_entry(self, entry: "JournalEntry") -> "JournalEntry":
+        import uuid as _uuid
+        from datetime import datetime, timezone as _tz
+        import dbus
+
+        if not entry.uid:
+            entry = entry.model_copy(update={"uid": str(_uuid.uuid4())})
+        if not entry.timestamp:
+            entry = entry.model_copy(update={"timestamp": datetime.now(tz=_tz.utc)})
+
+        props = {
+            "uid":         entry.uid,
+            "title":       entry.title,
+            "activity":    entry.activity,
+            "activity_id": entry.activity_id,
+            "mime_type":   entry.mime_type,
+            "timestamp":   str(entry.timestamp.timestamp()) if entry.timestamp else "",
+            "description": entry.description,
+            "tags":        ",".join(entry.tags),
+            "keep":        "1" if entry.keep else "0",
+            "share-scope": entry.share_scope,
+        }
+
+        import asyncio
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(
+            None,
+            lambda: self._ds.save(
+                dbus.Dictionary(props, signature="sv"),
+                "",    # no file path
+                False, # transfer_ownership
+                dbus.Dictionary({}, signature="sv"),
+            )
+        )
+        return entry
+
+
 # ---------------------------------------------------------------------------
 # File backend (flat JSON files in a directory)
 # ---------------------------------------------------------------------------
@@ -267,6 +304,16 @@ class FileDatastoreAdapter(BaseDatastoreAdapter):
             fp.unlink()
             return True
         return False
+
+    async def save_entry(self, entry: JournalEntry) -> JournalEntry:
+        if not entry.uid:
+            entry = entry.model_copy(update={"uid": str(uuid.uuid4())})
+        if not entry.timestamp:
+            entry = entry.model_copy(update={"timestamp": datetime.now(tz=timezone.utc)})
+        fp = self.root / f"{entry.uid}.json"
+        data = entry.model_dump(mode="json")
+        fp.write_text(json.dumps(data, indent=2, default=str))
+        return entry
 
 
 # ---------------------------------------------------------------------------
@@ -343,6 +390,20 @@ class MockDatastoreAdapter(BaseDatastoreAdapter):
                 _MOCK_ENTRIES.pop(i)
                 return True
         return False
+
+    async def save_entry(self, entry: "JournalEntry") -> "JournalEntry":
+        import uuid as _uuid
+        from datetime import datetime, timezone as _tz
+        if not entry.uid:
+            entry = entry.model_copy(update={"uid": str(_uuid.uuid4())})
+        if not entry.timestamp:
+            entry = entry.model_copy(update={"timestamp": datetime.now(tz=_tz.utc)})
+        for i, e in enumerate(_MOCK_ENTRIES):
+            if e.uid == entry.uid:
+                _MOCK_ENTRIES[i] = entry
+                return entry
+        _MOCK_ENTRIES.append(entry)
+        return entry
 
 
 # ---------------------------------------------------------------------------

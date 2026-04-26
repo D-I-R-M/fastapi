@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Sugar Journal — Live Updates</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #f0f4f8;
+      color: #1a202c;
+      padding: 2rem;
+    }
+
+    h1 {
+      font-size: 1.5rem;
+      margin-bottom: 0.25rem;
+      color: #2d3748;
+    }
+
+    p.subtitle {
+      color: #718096;
+      font-size: 0.9rem;
+      margin-bottom: 1.5rem;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1.5rem;
+    }
+
+    @media (max-width: 700px) { .grid { grid-template-columns: 1fr; } }
+
+    .card {
+      background: white;
+      border-radius: 12px;
+      padding: 1.25rem;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.08);
+    }
+
+    .card h2 {
+      font-size: 1rem;
+      margin-bottom: 1rem;
+      color: #4a5568;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    /* Status badge */
+    #status-badge {
+      display: inline-block;
+      padding: 0.2rem 0.7rem;
+      border-radius: 9999px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      background: #fed7d7;
+      color: #c53030;
+      transition: all 0.3s;
+    }
+    #status-badge.connected { background: #c6f6d5; color: #276749; }
+
+    /* Buttons */
+    button {
+      padding: 0.5rem 1rem;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 0.875rem;
+      font-weight: 500;
+      transition: opacity 0.15s;
+    }
+    button:hover { opacity: 0.85; }
+    button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    #btn-connect    { background: #4299e1; color: white; }
+    #btn-disconnect { background: #e53e3e; color: white; }
+    #btn-send       { background: #48bb78; color: white; width: 100%; margin-top: 0.75rem; }
+    #btn-clear      { background: #edf2f7; color: #4a5568; font-size: 0.75rem; padding: 0.3rem 0.75rem; }
+
+    .btn-row { display: flex; gap: 0.5rem; margin-bottom: 1rem; align-items: center; }
+
+    /* Form */
+    label { font-size: 0.8rem; color: #718096; display: block; margin-bottom: 0.25rem; }
+    input, textarea {
+      width: 100%;
+      padding: 0.5rem 0.75rem;
+      border: 1px solid #e2e8f0;
+      border-radius: 8px;
+      font-size: 0.875rem;
+      margin-bottom: 0.75rem;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+    input:focus, textarea:focus { border-color: #4299e1; }
+
+    /* Event log */
+    #log {
+      height: 320px;
+      overflow-y: auto;
+      background: #1a202c;
+      border-radius: 8px;
+      padding: 0.75rem;
+      font-family: "Fira Code", "Consolas", monospace;
+      font-size: 0.78rem;
+    }
+
+    .log-entry {
+      padding: 0.4rem 0.5rem;
+      margin-bottom: 0.4rem;
+      border-radius: 6px;
+      line-height: 1.5;
+      animation: fadeIn 0.3s ease;
+    }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; } }
+
+    .log-entry.info    { background: #2d3748; color: #90cdf4; }
+    .log-entry.success { background: #1c4532; color: #9ae6b4; }
+    .log-entry.event   { background: #1a365d; color: #bee3f8; }
+    .log-entry.error   { background: #742a2a; color: #fed7d7; }
+
+    .log-time { color: #718096; margin-right: 0.5rem; }
+
+    /* Counter */
+    #counter {
+      font-size: 2rem;
+      font-weight: 700;
+      color: #4299e1;
+      text-align: center;
+      margin: 0.5rem 0;
+    }
+    #counter-label { text-align: center; font-size: 0.8rem; color: #718096; }
+  </style>
+</head>
+<body>
+
+<h1>🍬 Sugar Journal — Live Updates</h1>
+<p class="subtitle">WebSocket client for <code>ws://localhost:8000/ws/journal</code></p>
+
+<div class="grid">
+
+  <!-- Left: Connection + Log -->
+  <div>
+    <div class="card" style="margin-bottom:1rem">
+      <h2>Connection <span id="status-badge">Disconnected</span></h2>
+      <div class="btn-row">
+        <button id="btn-connect">Connect</button>
+        <button id="btn-disconnect" disabled>Disconnect</button>
+      </div>
+      <label>WebSocket URL</label>
+      <input id="ws-url" value="ws://localhost:8000/ws/journal" />
+    </div>
+
+    <div class="card">
+      <h2>
+        Event Log
+        <button id="btn-clear" style="margin-left:auto">Clear</button>
+      </h2>
+      <div id="log"></div>
+    </div>
+  </div>
+
+  <!-- Right: Publish + Stats -->
+  <div>
+    <div class="card" style="margin-bottom:1rem">
+      <h2>Publish Test Entry</h2>
+      <label>Title</label>
+      <input id="f-title" value="My new TurtleArt drawing" />
+
+      <label>Activity bundle ID</label>
+      <input id="f-activity" value="org.sugarlabs.TurtleArt" />
+
+      <label>MIME type</label>
+      <input id="f-mime" value="image/png" />
+
+      <label>Tags (comma-separated)</label>
+      <input id="f-tags" value="art, loops" />
+
+      <button id="btn-send" disabled>📤 Save Entry (POST → triggers WebSocket)</button>
+    </div>
+
+    <div class="card">
+      <h2>Live Stats</h2>
+      <div id="counter">0</div>
+      <div id="counter-label">entries received this session</div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+  let ws = null;
+  let eventCount = 0;
+
+  const log      = document.getElementById('log');
+  const badge    = document.getElementById('status-badge');
+  const btnConn  = document.getElementById('btn-connect');
+  const btnDisc  = document.getElementById('btn-disconnect');
+  const btnSend  = document.getElementById('btn-send');
+  const counter  = document.getElementById('counter');
+  const wsUrl    = document.getElementById('ws-url');
+
+  function now() {
+    return new Date().toLocaleTimeString();
+  }
+
+  function addLog(text, type = 'info') {
+    const div = document.createElement('div');
+    div.className = `log-entry ${type}`;
+    div.innerHTML = `<span class="log-time">${now()}</span>${text}`;
+    log.appendChild(div);
+    log.scrollTop = log.scrollHeight;
+  }
+
+  function setConnected(connected) {
+    badge.textContent = connected ? 'Connected' : 'Disconnected';
+    badge.className   = connected ? 'connected' : '';
+    btnConn.disabled  = connected;
+    btnDisc.disabled  = !connected;
+    btnSend.disabled  = !connected;
+  }
+
+  // Connect
+  btnConn.addEventListener('click', () => {
+    const url = wsUrl.value.trim();
+    addLog(`Connecting to ${url}…`, 'info');
+    ws = new WebSocket(url);
+
+    ws.onopen = () => {
+      setConnected(true);
+      addLog('WebSocket connection established', 'success');
+    };
+
+    ws.onmessage = (e) => {
+      let data;
+      try { data = JSON.parse(e.data); } catch { data = e.data; }
+
+      if (data.event === 'connected') {
+        addLog(`✅ Handshake received — ${data.message}`, 'success');
+        return;
+      }
+
+      if (data.event === 'entry_added') {
+        eventCount++;
+        counter.textContent = eventCount;
+        addLog(
+          `📥 <strong>entry_added</strong> — uid: ${data.uid} | ` +
+          `title: "${data.title}" | activity: ${data.activity}`,
+          'event'
+        );
+        return;
+      }
+
+      // Generic message
+      addLog(`📨 ${JSON.stringify(data)}`, 'info');
+    };
+
+    ws.onerror = (err) => {
+      addLog(`❌ WebSocket error — check the server is running`, 'error');
+    };
+
+    ws.onclose = () => {
+      setConnected(false);
+      addLog('Connection closed', 'info');
+    };
+  });
+
+  // Disconnect
+  btnDisc.addEventListener('click', () => {
+    if (ws) ws.close();
+  });
+
+  // Clear log
+  document.getElementById('btn-clear').addEventListener('click', () => {
+    log.innerHTML = '';
+  });
+
+  // Publish entry via REST → server broadcasts to WebSocket
+  btnSend.addEventListener('click', async () => {
+    const tags = document.getElementById('f-tags').value
+      .split(',').map(t => t.trim()).filter(Boolean);
+
+    const body = {
+      uid: 'ws-test-' + Date.now(),
+      title:     document.getElementById('f-title').value,
+      activity:  document.getElementById('f-activity').value,
+      mime_type: document.getElementById('f-mime').value,
+      tags,
+    };
+
+    addLog(`📤 POST /entries — "${body.title}"`, 'info');
+
+    try {
+      const res = await fetch('http://localhost:8000/entries', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify(body),
+      });
+      if (res.ok) {
+        addLog(`✅ Entry saved (201) — waiting for WebSocket event…`, 'success');
+      } else {
+        const err = await res.json();
+        addLog(`❌ POST failed ${res.status}: ${JSON.stringify(err)}`, 'error');
+      }
+    } catch (err) {
+      addLog(`❌ Fetch error: ${err.message}`, 'error');
+    }
+  });
+</script>
+</body>
+</html>

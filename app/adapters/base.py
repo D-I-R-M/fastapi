@@ -11,3 +11,6 @@ class BaseDatastoreAdapter(ABC):
 
     @abstractmethod
     async def delete_entry(self, uid: str) -> bool: ...
+
+    @abstractmethod
+    async def save_entry(self, entry: "JournalEntry") -> "JournalEntry": ...

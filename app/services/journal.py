@@ -53,6 +53,21 @@ class JournalService:
     async def delete_entry(self, uid: str) -> bool:
         return await self._ds.delete_entry(uid)
 
+    async def save_entry(self, entry: JournalEntry) -> JournalEntry:
+        saved = await self._ds.save_entry(entry)
+        # Broadcast to all connected WebSocket clients
+        from app.services.broadcaster import broadcaster
+        await broadcaster.publish({
+            "event": "entry_added",
+            "uid": saved.uid,
+            "title": saved.title,
+            "activity": saved.activity,
+            "mime_type": saved.mime_type,
+            "timestamp": saved.timestamp.isoformat() if saved.timestamp else None,
+            "tags": saved.tags,
+        })
+        return saved
+
     async def aggregate(
         self,
         activity: str | None = None,
@@ -61,7 +76,7 @@ class JournalService:
     ) -> dict:
         """Return aggregate stats over a (filtered) view of the journal."""
         all_entries, _ = await self._ds.list_entries(
-            SearchQuery(limit=200, offset=0, activity=activity)
+            SearchQuery(limit=200, offset=0, activity=activity or "")
         )
         if since:
             all_entries = [e for e in all_entries if e.timestamp and e.timestamp >= since]
